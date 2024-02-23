@@ -1,4 +1,6 @@
 import BRAM::*;
+import FIFO::*;
+import KonataFibonacci::*;
 
 typedef BRAMRequest#(Bit#(8), Bit#(32)) CacheRequest;
 typedef BRAM1Port#(Bit#(8), Bit#(32)) CacheBRAM;
@@ -22,21 +24,6 @@ module mkFibonacci(Fibonacci);  // Version 4: Cached Version
 
     // How much can we hold in this BRAM for our problem?
     CacheBRAM cache <- mkBRAM1Server(cfg);  // "cache" version A
-    // Is it realistic hardware?
-
-    // Another way to do it
-    // BRAM1Port#(Bit#(4), Vector#(16, Bit#(32))) different_cache <- mkBRAM1Server(cfg);  // "cache" version B
-
-    // [not demonstrated] // cache version C can be a conventional cache smaller
-    // than the memory, w/ tags and valids and such
-
-    // Plan:
-    // - We initialize
-    //      - What happens if we don't?
-    //      - What do we initialize with?
-    //      - How long does it take to initialize?
-    // - We receive request, first we see if we have it.
-    // - If we get a miss, then we start the process from the beginning.
 
     Reg#(Bit#(32)) a <- mkReg(1);
     Reg#(Bit#(32)) b <- mkReg(0);
@@ -51,7 +38,15 @@ module mkFibonacci(Fibonacci);  // Version 4: Cached Version
 
     // Little flag for making things more verbose.
     Reg#(Bool) debug <- mkReg(False);
-    Reg#(Bit#(32)) cycle <- mkReg(0);
+    
+    // NEW!!! for Konata logging
+    String out_file = "output.log";
+    let f <- mkReg(InvalidFile);
+    Reg#(KonataID) new_id <- mkReg(0);
+    Reg#(KonataID) current_id <- mkReg(0);
+    Reg#(KonataID) commit_id <- mkReg(0);
+    // Reg#(Bit#(32)) cycle <- mkReg(0);
+    FIFO#(KonataID) commit_q <- mkFIFO;
 
     function CacheRequest make_write(Bit#(8) addr, Bit#(32) datain);
         let req = BRAMRequest {
@@ -70,11 +65,15 @@ module mkFibonacci(Fibonacci);  // Version 4: Cached Version
     endaction
     endfunction
 
-    rule debug_tick if (debug);
-        // the '/n' in the print string is a newline
-        $display("\n[0;32m-- Cycle %0d [%0d] --[0m", current, cycle);  // for this, then total
-        cycle <= cycle + 1;
+    rule konata_tick if (state != Setup);
+        tickKonata(f);
     endrule
+
+    // rule debug_tick if (debug);
+    //     // the '/n' in the print string is a newline
+    //     $display("\n[0;32m-- Cycle %0d [%0d] --[0m", current, cycle);  // for this, then total
+    //     cycle <= cycle + 1;
+    // endrule
 
     rule tick if (state == Working && current < target);
         let new_sum = a + b;  // Placed into variable because we use it twice
@@ -84,6 +83,8 @@ module mkFibonacci(Fibonacci);  // Version 4: Cached Version
         a <= new_sum;
         b <= a;
         current <= current + 1;
+
+        if (current == 0) codeKonata(f, current_id, "W");
 
         $display("Writing %0d to cache # %0d", a, current);
         cache_write(current, a);
@@ -102,6 +103,10 @@ module mkFibonacci(Fibonacci);  // Version 4: Cached Version
         // $display("Setup count at %0d", setup_count);
         if (setup_count == ~0) begin
             state <= Idle;
+            let t_f <- $fopen( out_file, "w" ) ;
+            f <= t_f;
+            $fwrite(t_f, "Kanata\t0004\nC=\t1\n");
+            tickKonata(t_f);
         end
     endrule
 
@@ -116,6 +121,14 @@ module mkFibonacci(Fibonacci);  // Version 4: Cached Version
         end else begin
             state <= Working;
         end
+        codeKonata(f, current_id,"Ch");
+    endrule
+
+    rule commits;
+        let c = commit_q.first();
+        commit_q.deq();
+
+        commitKonata(f, c);
     endrule
 
     method Action start(Bit#(8) n) if (state == Idle);
@@ -132,12 +145,20 @@ module mkFibonacci(Fibonacci);  // Version 4: Cached Version
             };
         cache.portA.request.put(req);
             
+        // Some weird stuff here (new is ahead by 1)
+        let id <- startKonata(f, new_id);
+        current_id <= id;
+
+        codeKonata(f, id,"S");
         state <= Checking;
     endmethod
 
     method ActionValue#(Bit#(32)) get() if (state == Returning);
         state <= Idle;
         $display("Retrieving answer %0d", a);
+
+        codeKonata(f, current_id, "R");  // could instead package into a KonataState struct
+        commit_q.enq(current_id);
 
         let req = make_write(target, a);
         cache.portA.request.put(req);

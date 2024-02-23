@@ -1,5 +1,7 @@
 BINARY_NAME = fibonacci_top
 
+.PHONY: clean $(BINARY_NAME)
+
 clean:
 	rm -f $(BINARY_NAME) *.ba *.bo *.cxx *.h *.o *.so
 	rm -rf build sim
